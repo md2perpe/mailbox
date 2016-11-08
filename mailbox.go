@@ -42,21 +42,22 @@ func (m *Mailbox) isClosed() bool {
 
 // rWait is a wait function for receivers
 func (m *Mailbox) rWait() (ok bool) {
-START:
-	if m.len > 0 {
-		// We have at least one unread message, return true
-		return true
-	}
+	for {
+		if m.len > 0 {
+			// We have at least one unread message, return true
+			return true
+		}
 
-	if m.isClosed() {
-		// We have an empty inbox AND we are closed, done bro - done.
-		return false
-	}
+		if m.isClosed() {
+			// We have an empty inbox AND we are closed, done bro - done.
+			return false
+		}
 
-	// Let's wait for a signal..
-	m.rc.Wait()
-	// Signal received, let's check again!
-	goto START
+		// Let's wait for a signal..
+		m.rc.Wait()
+	}
+	
+	return
 }
 
 // receive is the internal function for receiving messages
@@ -88,12 +89,10 @@ func (m *Mailbox) receive() (msg interface{}, state StateCode) {
 
 // send is the internal function used for sending messages
 func (m *Mailbox) send(msg interface{}) {
-CHECKFREE:
-	if m.cap-m.len == 0 {
+
+	for m.cap == m.len {
 		// There are no vacant spots in the inbox, time to wait
 		m.sc.Wait()
-		// We received a signal, check again!
-		goto CHECKFREE
 	}
 
 	// Goto the next index
@@ -115,37 +114,36 @@ CHECKFREE:
 // Send will send a message
 func (m *Mailbox) Send(msg interface{}) {
 	m.mux.Lock()
+	defer m.mux.Unlock()
+	
 	if m.isClosed() {
-		goto END
+		return
 	}
 
 	m.send(msg)
-
-END:
-	m.mux.Unlock()
 }
 
 // Batch will send a batch of messages
 func (m *Mailbox) Batch(msgs ...interface{}) {
 	m.mux.Lock()
+	defer m.mux.Unlock()
+	
 	if m.isClosed() {
-		goto END
+		return
 	}
 
 	// Iterate through each message
 	for _, msg := range msgs {
 		m.send(msg)
 	}
-
-END:
-	m.mux.Unlock()
 }
 
 // Receive will receive a message and state (See the "State" constants for more information)
 func (m *Mailbox) Receive() (msg interface{}, state StateCode) {
 	m.mux.Lock()
+	defer m.mux.Unlock()
+	
 	msg, state = m.receive()
-	m.mux.Unlock()
 	return
 }
 
@@ -155,6 +153,8 @@ func (m *Mailbox) Receive() (msg interface{}, state StateCode) {
 func (m *Mailbox) Listen(fn func(msg interface{}) (end bool)) (state StateCode) {
 	var msg interface{}
 	m.mux.Lock()
+	defer m.mux.Unlock()
+	
 	// Iterate until break is called
 	for {
 		// Get message and state
@@ -170,8 +170,7 @@ func (m *Mailbox) Listen(fn func(msg interface{}) (end bool)) (state StateCode) 
 			break
 		}
 	}
-
-	m.mux.Unlock()
+	
 	return
 }
 
@@ -185,6 +184,7 @@ func (m *Mailbox) Close() {
 
 	// Notify senders to attempt to send again
 	m.sc.Broadcast()
+
 	// Notify receivers to attempty to receive again
 	m.rc.Broadcast()
 }
